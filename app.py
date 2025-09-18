@@ -134,3 +134,4 @@ if up is not None:
 
 else:
     st.info("Upload a CSV to begin. Required columns: Brand, Category, Market, Year, Differentiation, Relevance, Esteem, Knowledge, Innovation")
+
