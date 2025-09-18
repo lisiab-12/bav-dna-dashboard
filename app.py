@@ -25,6 +25,31 @@ st.sidebar.write("**Download:** use the 'Export CSV' button at the bottom.")
 # File upload
 template_cols = ["Brand","Category","Market","Year","Differentiation","Relevance","Esteem","Knowledge","Innovation"]
 up = st.file_uploader("Upload BAV CSV", type=["csv"])
+# --- Fix column names so they match the app requirements ---
+required_columns = {
+    "brand": "Brand",
+    "category": "Category",
+    "market": "Market",
+    "year": "Year",
+    "differentiation": "Differentiation",
+    "relevance": "Relevance",
+    "esteem": "Esteem",
+    "knowledge": "Knowledge",
+    "innovation": "Innovation"
+}
+
+# Normalize: lowercase, strip spaces
+df.columns = df.columns.str.strip().str.lower()
+
+# Rename if matches dictionary
+df.rename(columns=required_columns, inplace=True)
+
+# Check if all required columns exist
+missing = [col for col in required_columns.values() if col not in df.columns]
+if missing:
+    st.error(f"Missing required columns even after renaming: {missing}")
+
+
 
 def to_num(x):
     try:
