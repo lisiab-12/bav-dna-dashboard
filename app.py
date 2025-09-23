@@ -51,6 +51,60 @@ if missing:
 
 
 
+# If no file yet, show a hint and stop cleanly (prevents NameError)
+if up is None:
+    st.info("Upload a CSV to begin. Required columns: " + ", ".join(template_cols))
+    st.stop()
+
+# Read the uploaded CSV
+df = pd.read_csv(up)
+
+# --- Fix column names so they match template_cols ---
+# Map common variants -> canonical names
+rename_map = {
+    "brand": "Brand",
+    "brand name": "Brand",
+
+    "category": "Category",
+    "sector": "Category",
+
+    "market": "Market",
+    "country": "Market",
+    "geography": "Market",
+
+    "year": "Year",
+    "wave": "Year",
+    "fieldwork year": "Year",
+    "study year": "Year",
+
+    "differentiation": "Differentiation",
+    "diff": "Differentiation",
+
+    "relevance": "Relevance",
+    "rel": "Relevance",
+
+    "esteem": "Esteem",
+
+    "knowledge": "Knowledge",
+    "know": "Knowledge",
+
+    "innovation": "Innovation",
+    "innov": "Innovation",
+}
+
+# Normalize headers then rename
+df.columns = df.columns.str.strip().str.lower()
+df.rename(columns=rename_map, inplace=True)
+
+# Check required columns and keep only what we need
+missing = [c for c in template_cols if c not in df.columns]
+if missing:
+    st.error(f"Missing required columns even after renaming: {missing}")
+    st.write("Detected headers:", list(df.columns))
+    st.stop()
+
+df = df[template_cols]  # drop extra columns
+
 def to_num(x):
     try:
         if isinstance(x, str):
