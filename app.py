@@ -1,6 +1,28 @@
-# ---- Load & normalize columns (robust to duplicates / variants) ----
-raw = pd.read_csv(up)
+import pandas as pd
+import numpy as np
+import streamlit as st
 
+# ---------- File upload ----------
+st.subheader("Upload BAV Raw CSV")
+up = st.file_uploader("Choose CSV", type=["csv"], accept_multiple_files=False, key="bav_csv")
+
+if up is None:
+    st.info("👆 Upload your BAV CSV to begin.")
+    st.stop()
+
+@st.cache_data(show_spinner=False)
+def load_csv(file):
+    # Try pyarrow for speed if available, else fallback
+    try:
+        df = pd.read_csv(file, engine="pyarrow")
+    except Exception:
+        file.seek(0)  # reset pointer after failed parse
+        df = pd.read_csv(file, low_memory=False)
+    return df
+
+raw = load_csv(up)
+
+# ---------- Normalise columns ----------
 # Flatten multi-index headers (if present), lowercase, strip
 if isinstance(raw.columns, pd.MultiIndex):
     raw.columns = [
@@ -12,16 +34,13 @@ raw.columns = raw.columns.astype(str).str.strip().str.lower()
 # If there are exact duplicate column names, keep the first occurrence
 raw = raw.loc[:, ~raw.columns.duplicated()]
 
-# Canonical name resolver: pick the FIRST matching column from a list of candidates
 def pick_first(df, candidates):
+    """Return first matching column as a 1-D Series or None."""
     found = [c for c in candidates if c in df.columns]
     if not found:
         return None
-    # If there are duplicates of the same name, df[found[0]] might still be 2-D.
-    # Always coerce to a 1-D Series via .iloc[:,0] when needed.
-    col = found[0]
-    ser = df[col]
-    if isinstance(ser, pd.DataFrame):
+    ser = df[found[0]]
+    if isinstance(ser, pd.DataFrame):  # guard if duplicated names created a 2-D slice
         ser = ser.iloc[:, 0]
     return ser
 
@@ -30,13 +49,12 @@ brand_ser  = pick_first(raw, ["brand", "brand name"])
 cat_ser    = pick_first(raw, ["category", "sector"])
 mkt_ser    = pick_first(raw, ["market", "country", "geography"])
 year_ser   = pick_first(raw, ["year", "study_year", "fieldwork_year", "wave"])
-diff_ser   = pick_first(raw, ["differentiation_rank", "diff_rank"])
-rel_ser    = pick_first(raw, ["relevance_rank"])
-est_ser    = pick_first(raw, ["esteem_rank"])
-know_ser   = pick_first(raw, ["knowledge_rank"])
-innov_ser  = pick_first(raw, ["mib_innovation_rank", "innovation_rank"])
+diff_ser   = pick_first(raw, ["differentiation_rank", "diff_rank", "differentiation rank"])
+rel_ser    = pick_first(raw, ["relevance_rank", "relevance rank"])
+est_ser    = pick_first(raw, ["esteem_rank", "esteem rank"])
+know_ser   = pick_first(raw, ["knowledge_rank", "knowledge rank"])
+innov_ser  = pick_first(raw, ["mib_innovation_rank", "innovation_rank", "innovation rank"])
 
-# Hard fail if anything critical is missing
 missing_bits = []
 if brand_ser is None:  missing_bits.append("brand")
 if cat_ser   is None:  missing_bits.append("category/sector")
@@ -50,9 +68,9 @@ if innov_ser is None:  missing_bits.append("mib_innovation_rank/innovation_rank"
 
 if missing_bits:
     st.error(f"Missing required columns (after normalizing): {missing_bits}")
+    st.dataframe(raw.head(20))
     st.stop()
 
-# Build a clean, 1-D frame
 df = pd.DataFrame({
     "brand":  brand_ser,
     "category": cat_ser,
@@ -65,7 +83,7 @@ df = pd.DataFrame({
     "mib_innovation_rank":  innov_ser,
 })
 
-# Coerce numeric fields
+# ---------- Cleaning ----------
 def to_num(x):
     try:
         if isinstance(x, str):
@@ -86,9 +104,9 @@ df["year"] = df["year"].apply(clean_year)
 for c in ["differentiation_rank","relevance_rank","esteem_rank","knowledge_rank","mib_innovation_rank"]:
     df[c] = df[c].apply(to_num)
 
-# Drop rows without a valid year; ensure it's a plain Series of ints
 df = df.dropna(subset=["year"]).copy()
 df["year"] = df["year"].astype(int)
 
-# From here on, your existing aggregation/groupby will work:
-# agg = df.groupby(["brand","category","market","year"], dropna=False)[...].mean(...).reset_index()
+st.success("✅ Data loaded and normalized.")
+st.write("Preview:")
+st.dataframe(df.head(20), use_container_width=True)
