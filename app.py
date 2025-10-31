@@ -304,7 +304,10 @@ st.caption(
     "_Legend_: **Δ vs Category (%)** = (Brand – Category average) / Category average · 100. "
     "**Δ vs last year (%)** compares each brand’s score to its own prior year."
 )
-st.dataframe(tidy, use_container_width=True)
+display_tidy = tidy.copy()
+display_tidy = display_tidy.fillna("")   # hide NaNs so Streamlit doesn’t show warning icons
+st.dataframe(display_tidy, use_container_width=True)
+
 
 # ----------------------------- #
 # Charts
