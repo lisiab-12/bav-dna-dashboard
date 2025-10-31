@@ -4,87 +4,32 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 
-# ----------------------------- #
-# App chrome
-# ----------------------------- #
+# ---------------- Page setup ----------------
 st.set_page_config(page_title="DNA from BAV — Converter", layout="wide")
 st.title("DNA from BAV — Converter")
-st.caption(
-    "Upload WPP BAV raw export (rank fields) → get Distinction, Nuance, Adventure, "
-    "YoY deltas, and auto-insights. Uses only *_rank columns."
-)
+st.caption("Upload WPP BAV raw export → get Distinction, Nuance, Adventure, YoY deltas, and auto-insights.")
 
-# ----------------------------- #
-# Sidebar controls (with help)
-# ----------------------------- #
+# ---------------- Sidebar controls ----------------
 st.sidebar.header("Controls")
 
-high_threshold = st.sidebar.number_input(
-    "High threshold (≥)",
-    min_value=0, max_value=100, value=65, step=1,
-    help="Scores at or above this value are classified as **High** for level labels."
-)
-mid_threshold = st.sidebar.number_input(
-    "Mid threshold (≥, < High)",
-    min_value=0, max_value=100, value=50, step=1,
-    help="Scores at or above this value (but below High) are **Mid**; otherwise **Low**."
-)
+with st.sidebar.expander("What do the thresholds mean?"):
+    st.write(
+        "- **High threshold (≥)**: score at or above this is tagged **High**.\n"
+        "- **Mid threshold (≥, < High)**: score at or above this is **Mid**; below it is **Low**.\n"
+        "These labels feed the Pattern/Insight/Action columns."
+    )
 
-k_knowledge = st.sidebar.slider(
-    "Adventure: Knowledge weight (k)",
-    0.0, 1.0, 0.40, 0.01,
-    help="Adventure = k×Knowledge_rank + (1−k)×MIB_Innovation_rank."
-)
+high_threshold = st.sidebar.number_input("High threshold (≥)", min_value=0, max_value=100, value=65, step=1)
+mid_threshold = st.sidebar.number_input("Mid threshold (≥, < High)", min_value=0, max_value=100, value=50, step=1)
+
+k_knowledge = st.sidebar.slider("Adventure: Knowledge weight (k)", 0.0, 1.0, 0.40, 0.01)
 k_innovation = 1 - k_knowledge
-st.sidebar.caption(f"Adventure = **{k_knowledge:.2f}×Knowledge** + **{k_innovation:.2f}×Innovation**")
+st.sidebar.caption(f"Adventure = {k_knowledge:.2f}×Knowledge + {k_innovation:.2f}×Innovation")
 
 st.sidebar.markdown("---")
 st.sidebar.write("**Download:** use the 'Export CSV' button at the bottom.")
 
-st.sidebar.markdown("---")
-with st.sidebar.expander("What do the thresholds mean?"):
-    st.markdown(
-        "- We classify D/N/A scores into **High / Mid / Low** bands for quick reading.\n"
-        "- **High threshold**: values **≥** this are **High**.\n"
-        "- **Mid threshold**: values **≥** this (but **< High**) are **Mid**; values below are **Low**.\n"
-        "- These labels drive the **Pattern** and the auto-insight/action text."
-    )
-
-# ----------------------------- #
-# File upload
-# ----------------------------- #
-st.subheader("Upload BAV CSV")
-up = st.file_uploader("Drag and drop file here", type=["csv"])
-
-required_rank_cols = [
-    "brand", "category", "market", "year",
-    "differentiation_rank", "relevance_rank", "esteem_rank",
-    "knowledge_rank", "mib_innovation_rank"
-]
-
-if up is None:
-    st.info(
-        "Upload a CSV to begin. **Required raw pull fields** (lower/any case fine): "
-        + ", ".join(required_rank_cols)
-    )
-    st.stop()
-
-# ----------------------------- #
-# Read + normalize headers
-# ----------------------------- #
-raw = pd.read_csv(up)
-raw.columns = raw.columns.str.strip().str.lower()
-
-missing = [c for c in required_rank_cols if c not in raw.columns]
-if missing:
-    st.error(f"Missing required columns: {missing}")
-    st.write("Detected headers:", list(raw.columns))
-    st.stop()
-
-# Keep only what we need
-df = raw[required_rank_cols].copy()
-
-# Clean types
+# ---------------- Helpers ----------------
 def to_num(x):
     try:
         if isinstance(x, str):
@@ -93,290 +38,290 @@ def to_num(x):
     except Exception:
         return np.nan
 
-df["year"] = df["year"].apply(lambda x: int(float(str(x).strip())) if str(x).strip() != "" else np.nan)
-for col in [
-    "differentiation_rank", "relevance_rank", "esteem_rank",
-    "knowledge_rank", "mib_innovation_rank"
-]:
-    df[col] = df[col].apply(to_num)
-
-# Canonical names (rank-only)
-df = df.rename(columns={
-    "brand": "Brand",
-    "category": "Category",
-    "market": "Market",
-    "year": "Year",
-    "differentiation_rank": "Differentiation",
-    "relevance_rank": "Relevance",
-    "esteem_rank": "Esteem",
-    "knowledge_rank": "Knowledge",
-    "mib_innovation_rank": "Innovation",
-})
-
-# ----------------------------- #
-# DNA calculations (rank scale, 0–100)
-# ----------------------------- #
-view = df.copy()
-view["D"] = view["Differentiation"]
-view["N"] = (view["Relevance"] + view["Esteem"]) / 2
-view["A"] = view["Knowledge"] * k_knowledge + view["Innovation"] * (1 - k_knowledge)
-view["DNA"] = view[["D", "N", "A"]].mean(axis=1)
-
-def band(x, mid, high):
-    if pd.isna(x): return "Low"
-    if x >= high: return "High"
-    if x >= mid: return "Mid"
+def compute_levels(x, mid, high):
+    if pd.isna(x):
+        return "Low"
+    if x >= high:
+        return "High"
+    if x >= mid:
+        return "Mid"
     return "Low"
 
-view["DLevel"] = view["D"].apply(lambda x: band(x, mid_threshold, high_threshold))
-view["NLevel"] = view["N"].apply(lambda x: band(x, mid_threshold, high_threshold))
-view["ALevel"] = view["A"].apply(lambda x: band(x, mid_threshold, high_threshold))
-view["Pattern"] = view["DLevel"] + " / " + view["NLevel"] + " / " + view["ALevel"]
-
-def auto_insight(dl, nl, al):
-    d_txt = {"High":"Distinctive","Mid":"Some distinctiveness","Low":"Blends in"}.get(dl,"Blends in")
-    n_txt = {"High":"Emotionally resonant","Mid":"Some resonance","Low":"Emotionally flat"}.get(nl,"Emotionally flat")
-    a_txt = {"High":"Progressive","Mid":"Some novelty","Low":"Conservative"}.get(al,"Conservative")
-    return f"{d_txt} | {n_txt} | {a_txt}"
-
-def pattern_to_action(p):
+def pattern_to_action(pattern):
     mapping = {
         "High / High / High": "Maintain momentum; codify codes; scale fame-driving acts.",
-        "High / Mid / High": "Add emotional breadth without blunting edge.",
-        "High / Low / High": "Build everyday relevance via service & community.",
-        "High / High / Mid": "Inject fresh provocations to avoid drift.",
-        "Mid / High / High": "Crystallise distinct codes; clarify POV.",
-        "High / Mid / Mid": "Distinct but stagnant; pilot bolder innovation.",
-        "Mid / High / Mid": "Sharpen codes; anchor in a felt need.",
-        "Mid / Mid / High": "Clarify proposition & proof; keep momentum.",
-        "Low / Low / Low": "Back to basics: define the brand world.",
+        "High / Mid / High": "Dial up emotional resonance and mainstream cues without blunting edge.",
+        "High / Low / High": "Build warmth and everyday relevance through service and community moments.",
+        "High / High / Mid": "Inject fresh provocations to avoid drift into safe heritage-only.",
+        "Mid / High / High": "Crystallise Distinction (codes) to cut through; clarify POV.",
+        "High / Mid / Mid": "Distinct but stagnant; pilot bolder innovation and experiences.",
+        "Mid / High / Mid": "Sharpen codes and simplify message; anchor in a felt need.",
+        "Mid / Mid / High": "Anchor proposition and proof; reduce vagueness while keeping momentum.",
+        "Low / Low / Low": "Back to basics: define who you are; craft minimum viable brand world.",
     }
-    return mapping.get(p, "Set foundational codes; then build warmth & momentum.")
+    return mapping.get(pattern, "Set foundational codes; then build warmth and momentum.")
 
-view["AutoInsight"] = view.apply(lambda r: auto_insight(r["DLevel"], r["NLevel"], r["ALevel"]), axis=1)
-view["AutoAction"]  = view["Pattern"].apply(pattern_to_action)
+def auto_insight(d_level, n_level, a_level):
+    d_txt = {"High":"Distinctive","Mid":"Some distinctiveness","Low":"Blends in"}.get(d_level,"Blends in")
+    n_txt = {"High":"Emotionally resonant","Mid":"Some resonance","Low":"Emotionally flat"}.get(n_level,"Emotionally flat")
+    a_txt = {"High":"Progressive","Mid":"Some novelty","Low":"Conservative"}.get(a_level,"Conservative")
+    return f"{d_txt} | {n_txt} | {a_txt}"
 
-# ----------------------------- #
-# YoY deltas (percentage) per Brand+Category
-# ----------------------------- #
-view = view.sort_values(["Brand", "Category", "Year"])
-for col in ["D", "N", "A", "DNA"]:
-    view[f"Δ YoY {col} (%)"] = np.nan
+# ---------------- Upload ----------------
+template_cols_rank = [
+    "Brand","Category","Market","Year",
+    "Differentiation","Relevance","Esteem","Knowledge","Innovation"
+]
 
-for (b, c), grp in view.groupby(["Brand", "Category"], dropna=False):
-    idx = grp.index.tolist()
-    prev = None
-    for i in idx:
-        if prev is not None:
-            curr = view.loc[i, ["D","N","A","DNA"]]
-            prevv = view.loc[prev, ["D","N","A","DNA"]]
-            pct = (curr - prevv) / prevv.replace(0, np.nan) * 100.0
-            for k in ["D","N","A","DNA"]:
-                view.loc[i, f"Δ YoY {k} (%)"] = pct[k]
-        prev = i
+up = st.file_uploader("Upload BAV CSV", type=["csv"])
 
-# ----------------------------- #
-# Sidebar “view” controls (after data exists)
-# ----------------------------- #
-st.sidebar.markdown("### View controls")
+if up is None:
+    st.info(
+        "Upload a CSV to begin. Required rank fields in raw pull: "
+        "`brand, category, market, year, differentiation_rank, relevance_rank, esteem_rank, knowledge_rank, mib_innovation_rank`."
+    )
+    st.stop()
 
-brands_all = sorted(view["Brand"].dropna().unique().tolist())
-focus_brand = st.sidebar.selectbox("Focus brand", brands_all if brands_all else ["—"])
+# ---------------- Load & normalize headers ----------------
+raw = pd.read_csv(up)
 
-# peers to use for Category Average line & vsCategory columns
+# Lowercase, strip
+raw.columns = raw.columns.str.strip().str.lower()
+
+# Map many common names -> canonical
+# (we only use *_rank columns for the five pillar inputs)
+colmap = {
+    # id
+    "brand": "brand",
+    "brand name": "brand",
+    "category": "category",
+    "sector": "category",
+    "market": "market",
+    "country": "market",
+    "geography": "market",
+    # year variants
+    "year": "year",
+    "study_year": "year",
+    "study year": "year",
+    "fieldwork year": "year",
+    "wave": "year",
+    # ranks
+    "differentiation_rank": "differentiation_rank",
+    "relevance_rank": "relevance_rank",
+    "esteem_rank": "esteem_rank",
+    "knowledge_rank": "knowledge_rank",
+    "mib_innovation_rank": "mib_innovation_rank",
+    # sometimes shorter
+    "diff_rank": "differentiation_rank",
+    "rel_rank": "relevance_rank",
+    "innov_rank": "mib_innovation_rank",
+}
+
+# Build a working frame with only fields we need (tolerant to extra columns)
+df = raw.rename(columns={c: colmap.get(c, c) for c in raw.columns}).copy()
+
+required = [
+    "brand","category","market","year",
+    "differentiation_rank","relevance_rank","esteem_rank","knowledge_rank","mib_innovation_rank"
+]
+missing = [c for c in required if c not in df.columns]
+if missing:
+    st.error(f"Missing required columns: {missing}")
+    st.write("Detected headers:", list(df.columns))
+    st.stop()
+
+# Clean & coerce Year → int
+def clean_year(x):
+    s = str(x).strip()
+    s = s.replace(",", "")
+    try:
+        val = int(float(s))
+        # Ignore implausible tiny years
+        return val if 1900 <= val <= 2100 else np.nan
+    except:
+        return np.nan
+
+df["year"] = df["year"].apply(clean_year)
+
+# Coerce ranks to numeric
+for c in ["differentiation_rank","relevance_rank","esteem_rank","knowledge_rank","mib_innovation_rank"]:
+    df[c] = df[c].apply(to_num)
+
+# ---- Aggregate duplicates to Brand×Category×Market×Year (mean) ----
+agg = (
+    df.groupby(["brand","category","market","year"], dropna=False)[
+        ["differentiation_rank","relevance_rank","esteem_rank","knowledge_rank","mib_innovation_rank"]
+    ].mean()
+    .reset_index()
+)
+
+# Drop rows without Year after cleaning
+agg = agg.dropna(subset=["year"]).copy()
+agg["year"] = agg["year"].astype(int)
+
+# Canonical working frame
+work = pd.DataFrame({
+    "Brand":           agg["brand"],
+    "Category":        agg["category"],
+    "Market":          agg["market"],
+    "Year":            agg["year"],
+    "Differentiation": agg["differentiation_rank"],
+    "Relevance":       agg["relevance_rank"],
+    "Esteem":          agg["esteem_rank"],
+    "Knowledge":       agg["knowledge_rank"],
+    "Innovation":      agg["mib_innovation_rank"],
+})
+
+# ---------------- DNA metrics ----------------
+out = work.copy()
+out["D"]   = out["Differentiation"]
+out["N"]   = (out["Relevance"] + out["Esteem"]) / 2
+out["A"]   = out["Knowledge"] * k_knowledge + out["Innovation"] * (1 - k_knowledge)
+out["DNA"] = out[["D","N","A"]].mean(axis=1)
+
+# Levels, pattern, insights
+out["DLevel"] = out["D"].apply(lambda x: compute_levels(x, mid_threshold, high_threshold))
+out["NLevel"] = out["N"].apply(lambda x: compute_levels(x, mid_threshold, high_threshold))
+out["ALevel"] = out["A"].apply(lambda x: compute_levels(x, mid_threshold, high_threshold))
+out["Pattern"] = out["DLevel"] + " / " + out["NLevel"] + " / " + out["ALevel"]
+out["AutoInsight"] = out.apply(lambda r: auto_insight(r["DLevel"], r["NLevel"], r["ALevel"]), axis=1)
+out["AutoAction"] = out["Pattern"].apply(pattern_to_action)
+
+# ---------------- User view filters ----------------
+st.sidebar.subheader("View controls")
+
+brands_sorted = sorted(out["Brand"].dropna().unique().tolist())
+default_brand = brands_sorted[0] if brands_sorted else None
+focus_brand = st.sidebar.selectbox("Focus brand", brands_sorted, index=brands_sorted.index(default_brand) if default_brand in brands_sorted else 0)
+
+peer_candidates = sorted(out.loc[out["Category"]==out[out["Brand"]==focus_brand]["Category"].iloc[0], "Brand"].unique().tolist()) \
+    if focus_brand and not out[out["Brand"]==focus_brand].empty else brands_sorted
+peer_candidates = [b for b in peer_candidates if b != focus_brand]
+
 peer_brands = st.sidebar.multiselect(
     "Peer brands for 'Category average' (choose any set)",
-    options=brands_all,
-    default=[b for b in brands_all if b != focus_brand][:3],
-    help="Used for the trend overlay & 'vs Category' columns. If empty, uses ALL brands in the same Category."
+    options=peer_candidates,
+    default=peer_candidates[:3] if len(peer_candidates) >= 3 else peer_candidates
 )
 
-metrics_opts = ["D", "N", "A", "DNA"]
-metrics_to_show = st.sidebar.multiselect(
-    "Metrics to show",
-    options=metrics_opts,
-    default=metrics_opts,
+metric_choices = ["D","N","A","DNA"]
+metrics_to_show = st.sidebar.multiselect("Metrics to show", metric_choices, default=metric_choices)
+
+# ---------------- Category averages (by chosen peers) ----------------
+# Compute Category average using only the selected peer brands (per Year)
+if peer_brands:
+    peers_df = out[out["Brand"].isin(peer_brands)].copy()
+else:
+    # if no peers chosen, use whole category (minus focus brand) to avoid empty
+    cat = out[out["Brand"]==focus_brand]["Category"].iloc[0] if focus_brand in out["Brand"].values else None
+    peers_df = out[(out["Category"]==cat) & (out["Brand"]!=focus_brand)].copy()
+
+cat_avg = (
+    peers_df.groupby(["Category","Year"], dropna=False)[["D","N","A","DNA"]].mean().reset_index()
+    .rename(columns={"D":"CategoryAvg_D","N":"CategoryAvg_N","A":"CategoryAvg_A","DNA":"CategoryAvg_DNA"})
 )
 
-# Year range
-min_year = int(view["Year"].min()) if len(view) else 2020
-max_year = int(view["Year"].max()) if len(view) else 2025
-year_min, year_max = st.sidebar.slider(
-    "Year range",
-    min_value=min_year, max_value=max_year,
-    value=(min_year, max_year),
-)
+view = out.merge(cat_avg, on=["Category","Year"], how="left")
 
-# Filtered table for display
-table_df = view[(view["Year"] >= year_min) & (view["Year"] <= year_max)].copy()
+# ---------------- vs Category (%) ----------------
+for m in ["D","N","A","DNA"]:
+    view[f"Δ vsCategory_{m} [%]"] = (view[m] - view[f"CategoryAvg_{m}"]) / view[f"CategoryAvg_{m}"].replace(0, np.nan) * 100
 
-# ----------------------------- #
-# Category averages (based on peer set if provided)
-# ----------------------------- #
-def calc_category_avg(frame: pd.DataFrame) -> pd.DataFrame:
-    """Returns Category avg per (Category, Market, Year) using chosen peers if available."""
-    # Build mask of peers within same Category for each row:
-    if peer_brands:
-        peers = frame["Brand"].isin(peer_brands)
-        base = frame.loc[peers].copy()
-        # If peer set empties a category/year, fallback to all
-        if base.empty:
-            base = frame.copy()
-    else:
-        base = frame.copy()
+# ---------------- YoY % (within Brand×Category×Market) ----------------
+view = view.sort_values(["Brand","Category","Market","Year"]).reset_index(drop=True)
+for m in ["D","N","A","DNA"]:
+    col = f"Δ YoY {m} [%]"
+    view[col] = np.nan
 
-    cat = (
-        base.groupby(["Category", "Market", "Year"], dropna=False)[["D", "N", "A", "DNA"]]
-        .mean()
-        .rename(columns={
-            "D": "CategoryAvg_D", "N": "CategoryAvg_N",
-            "A": "CategoryAvg_A", "DNA": "CategoryAvg_DNA"
-        })
-        .reset_index()
-    )
-    return cat
+for keys, grp in view.groupby(["Brand","Category","Market"], dropna=False):
+    idx = grp.index.tolist()
+    for prev_i, curr_i in zip(idx[:-1], idx[1:]):
+        prev_val = view.loc[prev_i, ["D","N","A","DNA"]]
+        curr_val = view.loc[curr_i, ["D","N","A","DNA"]]
+        for m in ["D","N","A","DNA"]:
+            p, c = prev_val[m], curr_val[m]
+            if pd.notna(p) and p != 0 and pd.notna(c):
+                view.loc[curr_i, f"Δ YoY {m} [%]"] = (c - p) / abs(p) * 100
 
-cat_avg = calc_category_avg(table_df)
-table_df = table_df.merge(cat_avg, on=["Category", "Market", "Year"], how="left")
-
-# vs Category deltas (percentage)
-for col in ["D", "N", "A", "DNA"]:
-    table_df[f"vsCategory_{col} (%)"] = (
-        (table_df[col] - table_df[f"CategoryAvg_{col}"]) /
-        table_df[f"CategoryAvg_{col}"].replace(0, np.nan)
-    ) * 100.0
-
-# ----------------------------- #
-# Interactive table filters (Brands)
-# ----------------------------- #
-table_brands = st.sidebar.multiselect(
-    "Filter table to brands",
-    sorted(view["Brand"].dropna().unique().tolist()),
-    default=sorted(view["Brand"].dropna().unique().tolist())
-)
-table_df = table_df[table_df["Brand"].isin(table_brands)].copy()
-
-# ----------------------------- #
-# Column presentation / grouping
-# (We drop BrandAvg_* and vsBrand_*; keep CategoryAvg_* and vsCategory_*)
-# ----------------------------- #
-# Build a MultiIndex for nicer grouping
-id_cols   = ["Brand", "Category", "Market", "Year"]
-raw_cols  = ["Differentiation", "Relevance", "Esteem", "Knowledge", "Innovation"]
-dna_cols  = ["D", "N", "A", "DNA"]
-lvl_cols  = ["DLevel", "NLevel", "ALevel", "Pattern", "AutoInsight", "AutoAction"]
-cat_cols  = ["CategoryAvg_D", "CategoryAvg_N", "CategoryAvg_A", "CategoryAvg_DNA"]
-vsc_cols  = ["vsCategory_D (%)", "vsCategory_N (%)", "vsCategory_A (%)", "vsCategory_DNA (%)"]
-yoy_cols  = ["Δ YoY D (%)", "Δ YoY N (%)", "Δ YoY A (%)", "Δ YoY DNA (%)"]
-
-# Reformat Year as int (ensure no decimals in table)
-table_df["Year"] = table_df["Year"].astype("Int64")
-
-# Prepare a tidy output with desired order
-out_cols = id_cols + raw_cols + dna_cols + lvl_cols + cat_cols + vsc_cols + yoy_cols
-
-# Ensure all exist (some could be missing if earlier steps changed)
-out_cols = [c for c in out_cols if c in table_df.columns]
-tidy = table_df[out_cols].copy()
-
-# Attach a hierarchical header
-def make_cols(cols):
-    groups = {}
-    for c in cols:
-        if c in id_cols:   groups[c] = ("Identifiers", c)
-        elif c in raw_cols: groups[c] = ("Raw (ranks)", c)
-        elif c in dna_cols: groups[c] = ("DNA (calc)", c)
-        elif c in lvl_cols: groups[c] = ("Interpretation", c)
-        elif c in cat_cols: groups[c] = ("Category average", c)
-        elif c in vsc_cols: groups[c] = ("Δ vs Category (%)", c)
-        elif c in yoy_cols: groups[c] = ("Δ vs last year (%)", c)
-        else:               groups[c] = ("Other", c)
-    tuples = [groups[c] for c in cols]
-    return pd.MultiIndex.from_tuples(tuples)
-
-tidy.columns = make_cols(tidy.columns)
-
-# ----------------------------- #
-# Results Table
-# ----------------------------- #
-st.subheader("Results Table")
+# ---------------- Display table ----------------
+st.markdown("### Results Table")
 st.caption(
-    "_Legend_: **Δ vs Category (%)** = (Brand – Category average) / Category average · 100. "
-    "**Δ vs last year (%)** compares each brand’s score to its own prior year."
+    "Legend: **Δ vs Category (%)** = (Brand − Category average) / Category average · 100. "
+    "**Δ vs last year (%)** compares each brand’s score to its own prior year within the same Category & Market."
 )
-display_tidy = tidy.copy()
-display_tidy = display_tidy.fillna("")   # hide NaNs so Streamlit doesn’t show warning icons
-st.dataframe(display_tidy, use_container_width=True)
 
+# Clean display-only “None” → blank for delta/avg cols
+display = view.copy()
+for c in display.columns:
+    if c.startswith("CategoryAvg_") or c.startswith("Δ vsCategory_") or c.startswith("Δ YoY"):
+        display[c] = display[c].round(4)
 
-# ----------------------------- #
-# Charts
-# ----------------------------- #
-st.subheader("Charts")
+# Group labels row (simple header hint)
+group_hint = pd.DataFrame([{
+    "Brand":"— Identifiers —", "Category":"— Identifiers —", "Market":"— Identifiers —", "Year":"— Identifiers —",
+    "Differentiation":"— Raw ranks —", "Relevance":"— Raw ranks —", "Esteem":"— Raw ranks —", "Knowledge":"— Raw ranks —", "Innovation":"— Raw ranks —",
+    "D":"— DNA calc —", "N":"— DNA calc —", "A":"— DNA calc —", "DNA":"— DNA calc —",
+    "DLevel":"— Interpretation —", "NLevel":"— Interpretation —", "ALevel":"— Interpretation —", "Pattern":"— Interpretation —",
+    "AutoInsight":"— Interpretation —", "AutoAction":"— Interpretation —"
+}])
+# Align columns
+group_hint = group_hint.reindex(columns=display.columns, fill_value="")
 
-# Latest year row for focus brand (within the chosen range)
-fb = table_df[table_df["Brand"] == focus_brand].copy()
-fb = fb.sort_values("Year")
-if not fb.empty:
-    latest = fb.dropna(subset=["Year"]).iloc[-1]
-    latest_year = int(latest["Year"])
-    show_metrics = [m for m in metrics_to_show if m in ["D","N","A","DNA"]]
+show_df = pd.concat([group_hint, display], ignore_index=True)
 
-    # Bar: D/N/A (or selected metrics) for latest year
-    bar_df = pd.DataFrame({
-        "Pillar": show_metrics,
-        "Score": [float(latest[m]) for m in show_metrics]
+st.dataframe(show_df, use_container_width=True)
+
+# ---------------- Charts ----------------
+st.markdown("### Charts")
+
+# 1) Bar — latest year for focus brand + category averages
+focus_df = view[view["Brand"]==focus_brand].copy()
+if not focus_df.empty:
+    latest_year = int(focus_df["Year"].max())
+    f_latest = focus_df[focus_df["Year"]==latest_year].copy()
+
+    # Single row per Market possible; aggregate across Market for the bar
+    f_bar = f_latest.groupby("Year")[["D","N","A","DNA"]].mean().reset_index()
+    f_bar_melt = f_bar.melt(id_vars=["Year"], value_vars=["D","N","A","DNA"], var_name="Pillar", value_name="Score")
+
+    cat_bar = cat_avg[cat_avg["Year"]==latest_year][["Year","CategoryAvg_D","CategoryAvg_N","CategoryAvg_A","CategoryAvg_DNA"]] \
+                .mean(numeric_only=True).to_frame().T
+    cat_bar["Year"] = latest_year
+    cat_bar = cat_bar.melt(id_vars=["Year"], value_vars=["CategoryAvg_D","CategoryAvg_N","CategoryAvg_A","CategoryAvg_DNA"],
+                           var_name="Pillar", value_name="CategoryAvg")
+    cat_bar["Pillar"] = cat_bar["Pillar"].map({
+        "CategoryAvg_D":"D","CategoryAvg_N":"N","CategoryAvg_A":"A","CategoryAvg_DNA":"DNA"
     })
 
-    # Annotate with YoY% on bars when available
-    yoy_labels = []
-    for m in show_metrics:
-        col = f"Δ YoY {m} (%)"
-        val = fb.iloc[-1][col] if col in fb.columns else np.nan
-        yoy_labels.append(val)
+    bar_merge = f_bar_melt.merge(cat_bar[["Pillar","CategoryAvg"]], on="Pillar", how="left")
 
-    fig_bar = px.bar(bar_df, x="Pillar", y="Score", title=f"{focus_brand} — latest year {latest_year} (YoY change shown)")
-    fig_bar.update_layout(yaxis=dict(range=[0, 100]))
-
-    # Add annotations for YoY%
-    for i, (pillar, score, yoy) in enumerate(zip(bar_df["Pillar"], bar_df["Score"], yoy_labels)):
-        if pd.notna(yoy):
-            fig_bar.add_annotation(
-                x=pillar, y=score, text=f"{yoy:+.1f}%", showarrow=False, yshift=12
-            )
-
+    fig_bar = px.bar(bar_merge, x="Pillar", y="Score", title=f"{focus_brand} — latest year {latest_year} (YoY change shown)")
+    # Add category average as markers
+    fig_bar.add_trace(go.Scatter(x=bar_merge["Pillar"], y=bar_merge["CategoryAvg"],
+                                 mode="markers", name="Category avg"))
+    fig_bar.update_layout(yaxis=dict(range=[0,100]))
     st.plotly_chart(fig_bar, use_container_width=True)
 
-    # Trend: brand vs category average line
-    trend = fb.sort_values("Year")
-    trend_x = trend["Year"].astype(int)
+# 2) Trend — brand vs category average (years as integers only)
+trend_brand = view[view["Brand"]==focus_brand].groupby("Year")[["D","N","A","DNA"]].mean().reset_index()
+trend_cat   = cat_avg.groupby("Year")[["CategoryAvg_D","CategoryAvg_N","CategoryAvg_A","CategoryAvg_DNA"]].mean().reset_index()
 
-    fig_line = go.Figure()
-    # Brand line
-    for m in show_metrics:
-        fig_line.add_trace(go.Scatter(
-            x=trend_x, y=trend[m].astype(float),
-            mode="lines+markers", name=f"{focus_brand} — {m}"
-        ))
-        # Category average overlay for same rows
-        catcol = f"CategoryAvg_{m}"
-        if catcol in trend.columns:
-            fig_line.add_trace(go.Scatter(
-                x=trend_x, y=trend[catcol].astype(float),
-                mode="lines+markers", name=f"Category avg — {m}", line=dict(dash="dash")
-            ))
-
-    fig_line.update_layout(
-        title=f"{focus_brand} — trend vs Category average",
-        yaxis=dict(range=[0, 100]),
-        xaxis=dict(tickmode="array", tickvals=sorted(trend_x.unique().tolist()))
+if not trend_brand.empty:
+    # Choose which metric to show in trend: default DNA
+    metric_for_trend = "DNA"
+    y1 = trend_brand[["Year",metric_for_trend]].rename(columns={metric_for_trend:f"{focus_brand} — {metric_for_trend}"})
+    y2 = trend_cat[["Year",f"CategoryAvg_{metric_for_trend}"]].rename(
+        columns={f"CategoryAvg_{metric_for_trend}":"Category avg — "+metric_for_trend}
     )
-    st.plotly_chart(fig_line, use_container_width=True)
-else:
-    st.info("Pick a **Focus brand** that exists within the selected year range to see charts.")
+    tmerge = y1.merge(y2, on="Year", how="outer").sort_values("Year")
+    fig_trend = go.Figure()
+    fig_trend.add_trace(go.Scatter(x=tmerge["Year"], y=tmerge[f"{focus_brand} — {metric_for_trend}"],
+                                   mode="lines+markers", name=f"{focus_brand} — {metric_for_trend}"))
+    fig_trend.add_trace(go.Scatter(x=tmerge["Year"], y=tmerge["Category avg — "+metric_for_trend],
+                                   mode="lines+markers", name="Category avg — "+metric_for_trend))
+    fig_trend.update_layout(title=f"{focus_brand} — trend vs Category average", xaxis=dict(tickmode="linear"), yaxis=dict(range=[0,100]))
+    st.plotly_chart(fig_trend, use_container_width=True)
 
-# ----------------------------- #
-# Export
-# ----------------------------- #
-csv_bytes = table_df.sort_values(["Brand","Category","Year"]).to_csv(index=False).encode("utf-8")
-st.download_button("Export CSV (all rows)", data=csv_bytes, file_name="dna_from_bav_output.csv")
+# ---------------- Export ----------------
+csv = view.to_csv(index=False).encode("utf-8")
+st.download_button("Export CSV (all rows)", data=csv, file_name="dna_from_bav_output.csv")
